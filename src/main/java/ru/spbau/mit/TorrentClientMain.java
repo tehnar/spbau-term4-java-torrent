@@ -8,32 +8,32 @@ import java.nio.file.Paths;
  */
 public final class TorrentClientMain {
     private static final int PRINT_DELAY = 1000;
-
-    private TorrentClientMain() {
-    }
+    private static final int DOWNLOAD_LINE_LEN = 50;
 
     private static final String USAGE_STRING = "Usage: list <tracker ip> | get <tracker ip> <file id> | "
             + "newfile <tracker ip> <file> | run <tracker ip>";
-    private static final int DOWNLOAD_LINE_LEN = 20;
+
+    private TorrentClientMain() {
+    }
 
     public static void main(String[] args) throws IOException, InterruptedException {
         if (args.length < 2) {
             System.err.println(USAGE_STRING);
             return;
         }
-        try (TorrentClient client = new TorrentClient(Paths.get("./files"), args[1])) {
+        try (TorrentClient client = new TorrentClient(Paths.get("./downloads"), args[1])) {
             if (args[0].equals("list")) {
-                System.out.printf("+---------+-----------+-------------------+\n");
-                System.out.printf("| File id | File size |     File name     |\n");
-                System.out.printf("+---------+-----------+-------------------+\n");
+                System.out.printf("+---------+-----------+-----------------------------+\n");
+                System.out.printf("| File id | File size |          File name          |\n");
+                System.out.printf("+---------+-----------+-----------------------------+\n");
                 for (TrackerProtocol.TrackerFileEntry entry : client.filesOnServer()) {
-                    System.out.printf("| %-7d | %-9d | %-17s |\n", entry.id, entry.size, entry.fileName);
+                    System.out.printf("| %-7d | %-9d | %-27s |\n", entry.id, entry.size, entry.fileName);
                 }
-                System.out.printf("+---------+-----------+-------------------+\n");
+                System.out.printf("+---------+-----------+-----------------------------+\n");
                 return;
             }
             if (args[0].equals("newfile")) {
-                int id = client.addFile(args[2]);
+                int id = client.addFile(Paths.get(args[2]));
                 System.out.println("File added, id=" + id);
                 return;
             }

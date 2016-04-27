@@ -49,9 +49,9 @@ public class TorrentServerTest {
             ExecutorService executorService = Executors.newCachedThreadPool();
             List<Future<Integer>> ids = new ArrayList<>();
             for (int i = 0; i < clients.size(); i++) {
-                final int index = i;
-                final TorrentClient client = clients.get(index);
-                ids.add(executorService.submit(() -> client.addFile(index + ".txt")));
+                final TorrentClient client = clients.get(i);
+                Path filePath = Paths.get(temporaryFolder.getRoot().getPath(), Integer.toString(i), i + ".txt");
+                ids.add(executorService.submit(() -> client.addFile(filePath)));
             }
             assertEquals(clients.size(), ids.stream()
                     .map((integerFuture) -> {
@@ -76,7 +76,8 @@ public class TorrentServerTest {
             clients = getClients();
             for (int i = 0; i < clients.size(); i++) {
                 clients.get(i).startPeering(DEFAULT_PORT + i);
-                assertEquals(i, clients.get(i).addFile(i + ".txt"));
+                assertEquals(i, clients.get(i).addFile(Paths.get(temporaryFolder.getRoot().getPath(),
+                        Integer.toString(i), i + ".txt")));
                 assertTrue(clients.get(i).update());
             }
             List<Thread> threads = new ArrayList<>();
@@ -108,7 +109,8 @@ public class TorrentServerTest {
             server.start();
             List<TorrentClient> clients = getClients();
             for (int i = 0; i < clients.size(); i++) {
-                clients.get(i).addFile(i + ".txt");
+                clients.get(i).addFile(Paths.get(temporaryFolder.getRoot().getPath(),
+                        Integer.toString(i), i + ".txt"));
                 clients.get(i).close();
             }
         }
@@ -132,7 +134,8 @@ public class TorrentServerTest {
             server.start();
             List<TorrentClient> clients = getClients();
             for (int i = 0; i < clients.size(); i++) {
-                clients.get(i).addFile(i + ".txt");
+                clients.get(i).addFile(Paths.get(temporaryFolder.getRoot().getPath(),
+                        Integer.toString(i), i + ".txt"));
                 clients.get(i).startPeering(0);
                 for (int j = 0; j < i; j++) {
                     clients.get(i).getFile(j);
@@ -153,7 +156,7 @@ public class TorrentServerTest {
             // CHECKSTYLE.OFF: MagicNumber
             fillFile(clientFile, (byte) 239);
             // CHECKSTYLE.ON: MagicNumber
-            int id = clients.get(0).addFile("newFile");
+            int id = clients.get(0).addFile(Paths.get(temporaryFolder.getRoot().getPath(), "0", "newFile"));
             for (int i = 1; i < clients.size(); i++) {
                 clients.get(i).getFile(id);
             }

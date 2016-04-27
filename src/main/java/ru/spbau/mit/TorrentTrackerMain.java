@@ -5,8 +5,8 @@ import java.io.IOException;
 /**
  * Created by Сева on 16.04.2016.
  */
-public final class TorrentServerMain {
-    private TorrentServerMain() {
+public final class TorrentTrackerMain {
+    private TorrentTrackerMain() {
     }
 
     public static void main(String[] args) throws IOException, InterruptedException {

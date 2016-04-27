@@ -11,7 +11,6 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 
 
@@ -19,6 +18,9 @@ import java.util.stream.Collectors;
  * Created by Сева on 26.03.2016.
  */
 public class TorrentClient implements Closeable {
+    private static final int SERVER_QUERY_DELAY = 1000;
+    private static final String SEEDING_FILES_FILENAME = "seeding_files.cfg";
+
     private final Path seedingFolder;
     private final String serverIp;
     private final Map<Integer, ClientFileEntry> seedingFiles = new ConcurrentHashMap<>();
@@ -26,73 +28,8 @@ public class TorrentClient implements Closeable {
     private final Path seedingFilesPath;
     private ServerSocket serverSocket = null;
     private final ExecutorService executorService = Executors.newCachedThreadPool();
-    private static final String SEEDING_FILES_FILENAME = "seeding_files.cfg";
     private final Timer updateTimer = new Timer();
-
-
-    public List<FileInfo> getFilesInfo() {
-        return seedingFiles.entrySet()
-                .stream()
-                .map(entry -> new FileInfo(entry.getValue()))
-                .collect(Collectors.toList());
-    }
-
-    @Override
-    public void close() throws IOException {
-        if (serverSocket != null) {
-            serverSocket.close();
-            updateTimer.cancel();
-            executorService.shutdownNow();
-            serverSocket = null;
-        }
-
-        try (DataOutputStream stream = new DataOutputStream(Files.newOutputStream(seedingFilesPath))) {
-            seedingFiles.forEach(((integer, clientFileEntry) -> {
-                try {
-                    stream.writeInt(clientFileEntry.id);
-                    stream.writeUTF(clientFileEntry.name);
-                    stream.writeLong(clientFileEntry.size);
-
-                    for (boolean b : clientFileEntry.isPartPresent) {
-                        stream.writeBoolean(b);
-                    }
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }));
-        }
-    }
-
-    public class ClientFileEntry {
-        // CHECKSTYLE.OFF: VisibilityModifier
-        int id;
-        String name;
-        long size;
-        boolean[] isPartPresent;
-        // CHECKSTYLE.ON: VisibilityModifier
-
-        ClientFileEntry(int id, String name, long size, boolean isFileExists) {
-            this.id = id;
-            this.name = name;
-            this.size = size;
-            int partCount = getPartCount(size);
-            isPartPresent = new boolean[partCount];
-            for (int i = 0; i < partCount; i++) {
-                isPartPresent[i] = isFileExists;
-            }
-        }
-
-        ClientFileEntry(int id, String name, long size, boolean[] isPartPresent) {
-            this.id = id;
-            this.name = name;
-            this.size = size;
-            this.isPartPresent = isPartPresent;
-        }
-    }
-
-    private int getPartCount(long size) {
-        return (int) Math.ceil(1.0 * size / ClientProtocol.PART_SIZE);
-    }
+    private final Map<String, Path> filePathByName = new ConcurrentHashMap<>();
 
     public TorrentClient(Path seedingFolder, String serverIp) throws IOException {
         this.serverIp = serverIp;
@@ -109,7 +46,7 @@ public class TorrentClient implements Closeable {
             while (true) {
                 try {
                     int id = stream.readInt();
-                    String name = stream.readUTF();
+                    String path = stream.readUTF();
                     long size = stream.readLong();
                     int partCount = getPartCount(size);
                     boolean[] isPartPresent = new boolean[partCount];
@@ -120,7 +57,7 @@ public class TorrentClient implements Closeable {
                             downloaded = false;
                         }
                     }
-                    ClientFileEntry entry = new ClientFileEntry(id, name, size, isPartPresent);
+                    ClientFileEntry entry = new ClientFileEntry(id, Paths.get(path), size, isPartPresent);
                     seedingFiles.put(id, entry);
                     if (!downloaded) {
                         downloadingFiles.put(id, entry);
@@ -132,12 +69,100 @@ public class TorrentClient implements Closeable {
         }
     }
 
-    public List<TrackerProtocol.TrackerFileEntry> filesOnServer() throws IOException {
-        try (Socket socket = new Socket(serverIp, TrackerProtocol.SERVER_PORT);
-             DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-             DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream())) {
+    @Override
+    public void close() throws IOException {
+        updateTimer.cancel();
+        executorService.shutdownNow();
+        if (serverSocket != null) {
+            serverSocket.close();
+            serverSocket = null;
+        }
 
-            return TrackerProtocol.makeListQuery(inputStream, outputStream);
+        try (DataOutputStream stream = new DataOutputStream(Files.newOutputStream(seedingFilesPath))) {
+            seedingFiles.forEach(((integer, clientFileEntry) -> {
+                try {
+                    stream.writeInt(clientFileEntry.id);
+                    stream.writeUTF(clientFileEntry.path.toString());
+                    stream.writeLong(clientFileEntry.size);
+
+                    for (boolean b : clientFileEntry.isPartPresent) {
+                        stream.writeBoolean(b);
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }));
+        }
+    }
+
+    private class ClientFileEntry {
+        // CHECKSTYLE.OFF: VisibilityModifier
+        int id;
+        Path path;
+        long size;
+        boolean[] isPartPresent;
+        // CHECKSTYLE.ON: VisibilityModifier
+
+        ClientFileEntry(int id, Path path, long size, boolean isFileExists) {
+            this.id = id;
+            this.path = path;
+            this.size = size;
+            int partCount = getPartCount(size);
+            isPartPresent = new boolean[partCount];
+            for (int i = 0; i < partCount; i++) {
+                isPartPresent[i] = isFileExists;
+            }
+        }
+
+        ClientFileEntry(int id, Path path, long size, boolean[] isPartPresent) {
+            this.id = id;
+            this.path = path;
+            this.size = size;
+            this.isPartPresent = isPartPresent;
+        }
+
+        public int getPartSize(int partId) {
+            long partSize = size - (long) partId * ClientProtocol.PART_SIZE;
+            if (partSize > ClientProtocol.PART_SIZE) {
+                partSize = ClientProtocol.PART_SIZE;
+            }
+            return (int) partSize;
+        }
+    }
+
+    private int getPartCount(long size) {
+        return (int) Math.ceil(1.0 * size / ClientProtocol.PART_SIZE);
+    }
+
+    public List<FileInfo> getFilesInfo() {
+        return seedingFiles.entrySet()
+                .stream()
+                .map(entry -> new FileInfo(entry.getValue()))
+                .collect(Collectors.toList());
+    }
+
+    private class Connection implements Closeable{
+        private final Socket socket;
+        private final DataInputStream inputStream;
+        private final DataOutputStream outputStream;
+
+        Connection(String serverIp, int port) throws IOException {
+            this.socket = new Socket(serverIp, port);
+            this.inputStream = new DataInputStream(socket.getInputStream());
+            this.outputStream = new DataOutputStream(socket.getOutputStream());
+        }
+
+        @Override
+        public void close() throws IOException {
+            outputStream.close();
+            inputStream.close();
+            socket.close();
+        }
+    }
+
+    public List<TrackerProtocol.TrackerFileEntry> filesOnServer() throws IOException {
+        try (Connection connection = new Connection(serverIp, TrackerProtocol.SERVER_PORT)) {
+            return TrackerProtocol.makeListQuery(connection.inputStream, connection.outputStream);
         }
     }
 
@@ -146,7 +171,8 @@ public class TorrentClient implements Closeable {
         for (TrackerProtocol.TrackerFileEntry entry : files) {
             if (entry.id == id) {
                 synchronized (downloadingFiles) {
-                    ClientFileEntry newEntry = new ClientFileEntry(id, entry.fileName, entry.size, false);
+                    Path filePath = Paths.get(seedingFolder.toString(), entry.fileName);
+                    ClientFileEntry newEntry = new ClientFileEntry(id, filePath, entry.size, false);
                     downloadingFiles.put(id, newEntry);
                     seedingFiles.put(id, newEntry);
                     downloadingFiles.notify();
@@ -156,51 +182,43 @@ public class TorrentClient implements Closeable {
         }
     }
 
-    public int addFile(String fileName) throws IOException {
-        try (Socket socket = new Socket(serverIp, TrackerProtocol.SERVER_PORT);
-             DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-             DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream())) {
-
-            long size = Files.size(Paths.get(seedingFolder.toString(), fileName));
-            int id = TrackerProtocol.makeUploadQuery(inputStream, outputStream, fileName, size);
-            ClientFileEntry entry = new ClientFileEntry(id, fileName, size, true);
+    public int addFile(Path filePath) throws IOException {
+        try (Connection connection = new Connection(serverIp, TrackerProtocol.SERVER_PORT)) {
+            long size = Files.size(filePath);
+            int id = TrackerProtocol.makeUploadQuery(connection.inputStream, connection.outputStream,
+                    filePath.getFileName().toString(), size);
+            ClientFileEntry entry = new ClientFileEntry(id, filePath, size, true);
             seedingFiles.put(id, entry);
             return id;
         }
     }
 
     public List<TrackerProtocol.ClientEntry> fileSeeders(int fileId) throws IOException {
-        try (Socket socket = new Socket(serverIp, TrackerProtocol.SERVER_PORT);
-             DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-             DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream())) {
-
-            return TrackerProtocol.makeSourcesQuery(inputStream, outputStream, fileId);
+        try (Connection connection = new Connection(serverIp, TrackerProtocol.SERVER_PORT)) {
+            return TrackerProtocol.makeSourcesQuery(connection.inputStream, connection.outputStream, fileId);
         }
     }
 
     public boolean update() throws IOException {
-        try (Socket socket = new Socket(serverIp, TrackerProtocol.SERVER_PORT);
-             DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-             DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream())) {
-
-            return TrackerProtocol.makeUpdateQuery(inputStream, outputStream, serverSocket.getLocalPort(),
+        try (Connection connection = new Connection(serverIp, TrackerProtocol.SERVER_PORT)) {
+            return TrackerProtocol.makeUpdateQuery(connection.inputStream, connection.outputStream,
+                    serverSocket.getLocalPort(),
                     seedingFiles.entrySet().stream().mapToInt(Map.Entry::getKey).toArray());
         }
     }
 
     private byte[] getPart(int fileId, int partId, int partSize,
                            TrackerProtocol.ClientEntry seeder) throws IOException {
-        try (Socket socket = new Socket(InetAddress.getByAddress(seeder.ip), seeder.port);
-             DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-             DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream())) {
-
-            return ClientProtocol.makeGetQuery(inputStream, outputStream, fileId, partId, partSize);
+        try (Connection connection =
+                     new Connection(InetAddress.getByAddress(seeder.ip).getHostAddress(), seeder.port)) {
+            return ClientProtocol.makeGetQuery(connection.inputStream, connection.outputStream,
+                    fileId, partId, partSize);
         }
     }
 
     public void startPeering(int seedingPort) throws IOException {
         serverSocket = new ServerSocket(seedingPort);
-        executorService.submit(new ClientAcceptor());
+        executorService.submit(this::startServer);
         updateTimer.scheduleAtFixedRate(new TimerTask() {
             @Override
             public void run() {
@@ -211,172 +229,138 @@ public class TorrentClient implements Closeable {
                 }
             }
         }, 0, TrackerProtocol.TIME_BETWEEN_UPDATE_QUERIES);
-        executorService.submit(new FileDownloader());
+        executorService.submit(this::downloadFiles);
     }
 
-    private class ClientAcceptor implements Runnable {
 
-        @Override
-        public void run() {
-            try (ServerSocket dummy = serverSocket) {
-                while (!serverSocket.isClosed()) {
-                    Socket socket = serverSocket.accept();
-                    executorService.submit(new ClientProcessor(socket));
-                }
-            } catch (IOException e) {
-                if (!e.getMessage().equals("socket closed")) {
-                    e.printStackTrace();
-                }
+    private void startServer() {
+        try (ServerSocket dummy = serverSocket) {
+            while (!serverSocket.isClosed()) {
+                Socket socket = serverSocket.accept();
+                executorService.submit(() -> handleClient(socket));
             }
-        }
-    }
-
-    private class ClientProcessor implements Runnable {
-        private final Socket socket;
-
-        ClientProcessor(Socket socket) {
-            this.socket = socket;
-        }
-
-        @Override
-        public void run() {
-            try (DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-                 DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream())) {
-                while (!socket.isClosed()) {
-                    int type = ClientProtocol.getQueryType(inputStream);
-                    switch (type) {
-                        case ClientProtocol.STAT_QUERY:
-                            int id = ClientProtocol.getStatQueryId(inputStream);
-                            List<Integer> availableParts = new ArrayList<>();
-                            ClientFileEntry entry = seedingFiles.get(id);
-                            for (int i = 0; i < getPartCount(entry.size); i++) {
-                                if (entry.isPartPresent[i]) {
-                                    availableParts.add(i);
-                                }
-                            }
-                            ClientProtocol.statQueryResponse(outputStream, availableParts);
-                            break;
-
-                        case ClientProtocol.GET_QUERY:
-                            ClientProtocol.GetQueryData queryData = ClientProtocol.getGetQueryData(inputStream);
-                            entry = seedingFiles.get(queryData.id);
-                            try (RandomAccessFile file = new RandomAccessFile(Paths.get(seedingFolder.toString(),
-                                    entry.name).toString(), "r")) {
-                                file.seek((long) queryData.part * ClientProtocol.PART_SIZE);
-                                ClientProtocol.getQueryResponse(outputStream, file);
-                            }
-                            break;
-
-                        default:
-                            throw new IllegalStateException("Unknown query type: " + type);
-                    }
-                }
-            } catch (EOFException ignored) {
-
-            } catch (IOException e) {
+        } catch (IOException e) {
+            if (!e.getMessage().equals("socket closed")) {
                 e.printStackTrace();
             }
         }
     }
 
-    private class FileDownloader implements Runnable {
-        @Override
-        public void run() {
-            while (!Thread.interrupted()) {
-                Map<Integer, Future> fileDownloaders = new HashMap<>();
-                try {
-                    synchronized (downloadingFiles) {
-                        for (Map.Entry<Integer, ClientFileEntry> entry : downloadingFiles.entrySet()) {
-                            if (!fileDownloaders.containsKey(entry.getKey())) {
-                                Future future = executorService.submit(new Downloader(entry.getValue()));
-                                fileDownloaders.put(entry.getKey(), future);
+    private void handleClient(Socket socket) {
+        try (DataInputStream inputStream = new DataInputStream(socket.getInputStream());
+             DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream())) {
+            while (!socket.isClosed()) {
+                int type = ClientProtocol.getQueryType(inputStream);
+                switch (type) {
+                    case ClientProtocol.STAT_QUERY:
+                        int id = ClientProtocol.getStatQueryId(inputStream);
+                        List<Integer> availableParts = new ArrayList<>();
+                        ClientFileEntry entry = seedingFiles.get(id);
+                        for (int i = 0; i < getPartCount(entry.size); i++) {
+                            if (entry.isPartPresent[i]) {
+                                availableParts.add(i);
                             }
                         }
-                        downloadingFiles.wait(); // wait until new file to be downloaded
-                    }
-                } catch (InterruptedException e) {
-                    return;
+                        ClientProtocol.statQueryResponse(outputStream, availableParts);
+                        break;
+
+                    case ClientProtocol.GET_QUERY:
+                        ClientProtocol.GetQueryData queryData = ClientProtocol.getGetQueryData(inputStream);
+                        entry = seedingFiles.get(queryData.id);
+                        try (RandomAccessFile file = new RandomAccessFile(entry.path.toString(), "r")) {
+                            file.seek((long) queryData.part * ClientProtocol.PART_SIZE);
+                            int partSize = entry.getPartSize(queryData.part);
+                            byte[] buffer = new byte[partSize];
+                            file.readFully(buffer, 0, partSize);
+                            ClientProtocol.getGetQueryResponse(outputStream, buffer);
+                        }
+                        break;
+
+                    default:
+                        throw new IllegalStateException("Unknown query type: " + type);
                 }
+            }
+        } catch (EOFException ignored) {
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void downloadFiles() {
+        while (!Thread.interrupted()) {
+            Set<Integer> fileDownloaders = new HashSet<>();
+            try {
+                synchronized (downloadingFiles) {
+                    for (Map.Entry<Integer, ClientFileEntry> entry : downloadingFiles.entrySet()) {
+                        if (!fileDownloaders.contains(entry.getKey())) {
+                            executorService.submit(() -> downloadFile(entry.getValue()));
+                            fileDownloaders.add(entry.getKey());
+                        }
+                    }
+                    downloadingFiles.wait(); // wait until new file to be downloaded
+                }
+            } catch (InterruptedException e) {
+                return;
             }
         }
+    }
 
-        private class Downloader implements Runnable {
-            private static final int SERVER_QUERY_DELAY = 1000;
-            private final ClientFileEntry entry;
-
-            Downloader(ClientFileEntry entry) {
-                this.entry = entry;
+    private void downloadFile(ClientFileEntry entry) {
+        Path filePath = Paths.get(seedingFolder.toString(), entry.path.getFileName().toString());
+        final RandomAccessFile file;
+        try {
+            if (Files.notExists(filePath)) {
+                Files.createFile(filePath);
             }
-
-            @Override
-            public void run() {
-                Path filePath = Paths.get(seedingFolder.toString(), entry.name);
-                final RandomAccessFile file;
-                try {
-                    if (Files.notExists(filePath)) {
-                        Files.createFile(filePath);
+            file = new RandomAccessFile(filePath.toFile(), "rw");
+            file.setLength(entry.size);
+        } catch (IOException e) {
+            e.printStackTrace();
+            return;
+        }
+        boolean downloadCompleted = false;
+        while (!downloadCompleted) {
+            try {
+                List<TrackerProtocol.ClientEntry> seeders = fileSeeders(entry.id);
+                Collections.shuffle(seeders); // to distribute load,
+                // otherwise all the clients will be downloading from the same seeder
+                TrackerProtocol.ClientEntry[] partOwner =
+                        new TrackerProtocol.ClientEntry[entry.isPartPresent.length];
+                for (TrackerProtocol.ClientEntry seeder : seeders) {
+                    if (seeder.port == serverSocket.getLocalPort()) {
+                        continue;
                     }
-                    file = new RandomAccessFile(filePath.toFile(), "rw");
-                    file.setLength(entry.size);
-                } catch (IOException e) {
-                    e.printStackTrace();
-                    return;
-                }
-                boolean downloadCompleted = false;
-                while (!downloadCompleted) {
-                    try {
-                        List<TrackerProtocol.ClientEntry> seeders = fileSeeders(entry.id);
-                        Collections.shuffle(seeders); // to distribute load,
-                        // otherwise all the clients will be downloading from the same seeder
-                        TrackerProtocol.ClientEntry[] partOwner =
-                                new TrackerProtocol.ClientEntry[entry.isPartPresent.length];
-                        for (TrackerProtocol.ClientEntry seeder : seeders) {
-                            if (seeder.port == serverSocket.getLocalPort()) {
-                                continue;
-                            }
-                            try (Socket socket = new Socket(InetAddress.getByAddress(seeder.ip), seeder.port);
-                                 DataInputStream inputStream = new DataInputStream(socket.getInputStream());
-                                 DataOutputStream outputStream = new DataOutputStream(socket.getOutputStream())) {
-
-                                for (int partId : ClientProtocol.makeStatQuery(inputStream,
-                                        outputStream, entry.id)) {
-                                    partOwner[partId] = seeder;
-                                }
-                            }
+                    try (Connection connection = new Connection(
+                            InetAddress.getByAddress(seeder.ip).getHostAddress(), seeder.port)) {
+                        for (int partId : ClientProtocol.makeStatQuery(connection.inputStream,
+                                connection.outputStream, entry.id)) {
+                            partOwner[partId] = seeder;
                         }
-                        downloadCompleted = true;
-                        for (int partId = 0; partId < entry.isPartPresent.length; partId++) {
-                            if (!entry.isPartPresent[partId]) {
-                                downloadCompleted = false;
-                                if (partOwner[partId] == null) {
-                                    continue;
-                                }
-                                int partSize = ClientProtocol.PART_SIZE;
-                                if (partId == entry.isPartPresent.length - 1) {
-                                    partSize = (int) (entry.size % ClientProtocol.PART_SIZE);
-                                    if (partSize == 0) {
-                                        partSize = ClientProtocol.PART_SIZE;
-                                    }
-                                }
-                                byte[] partData = getPart(entry.id, partId, partSize, partOwner[partId]);
-                                if (partData.length < partSize) {
-                                    continue;
-                                }
-                                file.seek((long) partId * ClientProtocol.PART_SIZE);
-                                file.write(partData);
-                                entry.isPartPresent[partId] = true;
-                            }
-                        }
-                        Thread.sleep(SERVER_QUERY_DELAY); //to not to spam with queries
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    } catch (InterruptedException e) {
-                        return;
                     }
                 }
-                downloadingFiles.remove(entry.id);
+                downloadCompleted = true;
+                for (int partId = 0; partId < entry.isPartPresent.length; partId++) {
+                    if (!entry.isPartPresent[partId]) {
+                        downloadCompleted = false;
+                        if (partOwner[partId] == null) {
+                            continue;
+                        }
+
+                        byte[] partData = getPart(entry.id, partId, entry.getPartSize(partId), partOwner[partId]);
+                        file.seek((long) partId * ClientProtocol.PART_SIZE);
+                        file.write(partData);
+                        entry.isPartPresent[partId] = true;
+                    }
+                }
+                Thread.sleep(SERVER_QUERY_DELAY); //to not to spam with queries
+            } catch (IOException e) {
+                e.printStackTrace();
+            } catch (InterruptedException e) {
+                return;
             }
         }
+        downloadingFiles.remove(entry.id);
     }
 
     public class FileInfo {
@@ -387,7 +371,7 @@ public class TorrentClient implements Closeable {
         // CHECKSTYLE.ON: VisibilityModifier
 
         FileInfo(ClientFileEntry entry) {
-            fileName = entry.name;
+            fileName = entry.path.getFileName().toString();
             int downloadedPartCnt = 0;
             for (boolean b : entry.isPartPresent) {
                 if (b) {

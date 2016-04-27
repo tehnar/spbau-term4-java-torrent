@@ -3,7 +3,6 @@ package ru.spbau.mit;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -13,7 +12,7 @@ import java.util.List;
 public final class ClientProtocol {
     public static final int STAT_QUERY = 1;
     public static final int GET_QUERY = 2;
-    public static final int PART_SIZE = 1024 * 1024;
+    public static final int PART_SIZE = 10 * 1024 * 1024;
     private ClientProtocol() {
 
     }
@@ -27,17 +26,8 @@ public final class ClientProtocol {
         return new GetQueryData(inputStream.readInt(), inputStream.readInt());
     }
 
-    public static void getQueryResponse(DataOutputStream outputStream, RandomAccessFile file) throws IOException {
-        byte[] buffer = new byte[PART_SIZE];
-        int remainingBytes = PART_SIZE;
-        while (remainingBytes > 0) {
-            int readBytes = file.read(buffer, 0, remainingBytes);
-            if (readBytes == -1) { // last part may be smaller than PART_SIZE
-                break;
-            }
-            outputStream.write(buffer, 0, readBytes);
-            remainingBytes -= readBytes;
-        }
+    public static void getGetQueryResponse(DataOutputStream outputStream, byte[] part) throws IOException {
+        outputStream.write(part);
         outputStream.flush();
     }
 
@@ -84,7 +74,8 @@ public final class ClientProtocol {
 
     public static class GetQueryData {
         // CHECKSTYLE.OFF: VisibilityModifier
-        int id, part;
+        int id;
+        int part;
         // CHECKSTYLE.ON: VisibilityModifier
 
         GetQueryData(int id, int part) {
