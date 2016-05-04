@@ -25,6 +25,8 @@ cd $TMP/server
 $SERVER & 
 PID0=$!
 
+sleep 5
+
 cd $TMP/client1
 
 $CLIENT newfile 127.0.0.1 $REFERENCE_FILE 
