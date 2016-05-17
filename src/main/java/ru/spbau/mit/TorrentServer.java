@@ -136,6 +136,10 @@ public class TorrentServer implements Closeable {
                                     try {
                                         client.close();
                                         clients.remove(clientEntry);
+                                        for (Map.Entry<Integer, Set<TrackerProtocol.ClientEntry>> entry
+                                                : fileSources.entrySet()) {
+                                            entry.getValue().remove(clientEntry);
+                                        }
                                     } catch (IOException e) {
                                         e.printStackTrace();
                                     }
