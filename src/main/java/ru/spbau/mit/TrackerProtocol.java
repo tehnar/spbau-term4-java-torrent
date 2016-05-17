@@ -210,7 +210,13 @@ public final class TrackerProtocol {
         // CHECKSTYLE.ON: VisibilityModifier
 
         public UpdateQueryData(int port, int[] ids) {
-            this.port = port;
+            // CHECKSTYLE.OFF: MagicNumber
+            if (port < 0) {
+                this.port = (1 << 16) + port;
+            } else {
+                this.port = port;
+            }
+            // CHECKSTYLE.ON: MagicNumber
             this.fileIds = ids;
         }
     }

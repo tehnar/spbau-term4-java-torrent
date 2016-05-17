@@ -22,7 +22,7 @@ public class TorrentClient implements Closeable {
     private static final String SEEDING_FILES_FILENAME = "seeding_files.cfg";
 
     private final Path seedingFolder;
-    private final String serverIp;
+    private String serverIp = "localhost";
     private final Map<Integer, ClientFileEntry> seedingFiles = new ConcurrentHashMap<>();
     private final Map<Integer, ClientFileEntry> downloadingFiles = new ConcurrentHashMap<>();
     private final Path seedingFilesPath;
@@ -31,8 +31,7 @@ public class TorrentClient implements Closeable {
     private final Timer updateTimer = new Timer();
     private final Map<String, Path> filePathByName = new ConcurrentHashMap<>();
 
-    public TorrentClient(Path seedingFolder, String serverIp) throws IOException {
-        this.serverIp = serverIp;
+    public TorrentClient(Path seedingFolder) throws IOException {
         this.seedingFolder = seedingFolder;
         if (Files.notExists(seedingFolder)) {
             Files.createDirectory(seedingFolder);
@@ -69,6 +68,11 @@ public class TorrentClient implements Closeable {
         }
     }
 
+    public TorrentClient(Path seedingFolder, String serverIp) throws IOException {
+        this(seedingFolder);
+        this.serverIp = serverIp;
+    }
+
     @Override
     public void close() throws IOException {
         updateTimer.cancel();
@@ -77,22 +81,11 @@ public class TorrentClient implements Closeable {
             serverSocket.close();
             serverSocket = null;
         }
+        saveChanges();
+    }
 
-        try (DataOutputStream stream = new DataOutputStream(Files.newOutputStream(seedingFilesPath))) {
-            seedingFiles.forEach(((integer, clientFileEntry) -> {
-                try {
-                    stream.writeInt(clientFileEntry.id);
-                    stream.writeUTF(clientFileEntry.path.toString());
-                    stream.writeLong(clientFileEntry.size);
-
-                    for (boolean b : clientFileEntry.isPartPresent) {
-                        stream.writeBoolean(b);
-                    }
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }));
-        }
+    public void setServerAddress(String ip) {
+        this.serverIp = ip;
     }
 
     private class ClientFileEntry {
@@ -180,6 +173,7 @@ public class TorrentClient implements Closeable {
                 break;
             }
         }
+        saveChanges();
     }
 
     public int addFile(Path filePath) throws IOException {
@@ -189,6 +183,7 @@ public class TorrentClient implements Closeable {
                     filePath.getFileName().toString(), size);
             ClientFileEntry entry = new ClientFileEntry(id, filePath, size, true);
             seedingFiles.put(id, entry);
+            saveChanges();
             return id;
         }
     }
@@ -337,6 +332,8 @@ public class TorrentClient implements Closeable {
                                 connection.outputStream, entry.id)) {
                             partOwner[partId] = seeder;
                         }
+                    } catch (IOException e) {
+                        e.printStackTrace();
                     }
                 }
                 downloadCompleted = true;
@@ -351,6 +348,7 @@ public class TorrentClient implements Closeable {
                         file.seek((long) partId * ClientProtocol.PART_SIZE);
                         file.write(partData);
                         entry.isPartPresent[partId] = true;
+                        saveChanges();
                     }
                 }
                 Thread.sleep(SERVER_QUERY_DELAY); //to not to spam with queries
@@ -363,15 +361,35 @@ public class TorrentClient implements Closeable {
         downloadingFiles.remove(entry.id);
     }
 
-    public class FileInfo {
+    private synchronized void saveChanges() throws IOException {
+        try (DataOutputStream stream = new DataOutputStream(Files.newOutputStream(seedingFilesPath))) {
+            seedingFiles.forEach(((integer, clientFileEntry) -> {
+                try {
+                    stream.writeInt(clientFileEntry.id);
+                    stream.writeUTF(clientFileEntry.path.toString());
+                    stream.writeLong(clientFileEntry.size);
+
+                    for (boolean b : clientFileEntry.isPartPresent) {
+                        stream.writeBoolean(b);
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }));
+        }
+    }
+
+    public static class FileInfo {
         // CHECKSTYLE.OFF: VisibilityModifier
         final boolean isFinished;
         final String fileName;
         final double downloadedPercentage;
+        final long fileSize;
         // CHECKSTYLE.ON: VisibilityModifier
 
         FileInfo(ClientFileEntry entry) {
             fileName = entry.path.getFileName().toString();
+            fileSize = entry.size;
             int downloadedPartCnt = 0;
             for (boolean b : entry.isPartPresent) {
                 if (b) {
